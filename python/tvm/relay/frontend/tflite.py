@@ -1323,14 +1323,9 @@ class OperatorConverter(object):
         input_tensors = self.get_input_tensors(op)
         assert len(input_tensors) == 2, "input tensors length should be 2"
 
-        data = self.get_expr(input_tensors[0].tensor_idx)
+        data = self.get_tensor_expr(input_tensors[0])
 
-        indices = input_tensors[1]
-        indices_type = indices.tensor.Type()
-        assert indices_type in (TensorType.INT32, TensorType.INT64)
-        indices_type_str = self.get_tensor_type_str(indices_type)
-        indices = self.exp_tab.new_const(self.get_tensor_value(indices),
-                                         dtype=indices_type_str)
+        indices = self.get_tensor_expr(input_tensors[1])
 
         assert op.BuiltinOptionsType() == BuiltinOptions.GatherOptions
         op_options = op.BuiltinOptions()
@@ -1338,7 +1333,6 @@ class OperatorConverter(object):
         gather_options.Init(op_options.Bytes, op_options.Pos)
         axis = gather_options.Axis()
 
-        # Check the indices are with in bounds.
         data_shape = list(input_tensors[0].tensor.ShapeAsNumpy())
         data_dim = len(data_shape)
 
@@ -1348,28 +1342,30 @@ class OperatorConverter(object):
         assert axis_n >= 0, "Axis out of bounds"
         assert axis_n < data_dim, "Axis out of bounds"
 
-        indices_val = self.get_tensor_value(input_tensors[1])
-        indices_shape = list(indices_val.shape)
-        indices_len = len(indices_shape)
+        # Check the indices are with in bounds if they're constant
+        if not self.has_expr(input_tensors[1].tensor_idx):
+            indices_val = self.get_tensor_value(input_tensors[1])
+            indices_shape = list(indices_val.shape)
+            indices_len = len(indices_shape)
 
-        out_shape = []
-        for i in range(data_dim):
-            if axis_n == i:
-                for j in range(indices_len):
-                    out_shape.append(indices_shape[j])
-            else:
-                out_shape.append(data_shape[i])
+            out_shape = []
+            for i in range(data_dim):
+                if axis_n == i:
+                    for j in range(indices_len):
+                        out_shape.append(indices_shape[j])
+                else:
+                    out_shape.append(data_shape[i])
 
-        loopover = [range(s) for s in out_shape]
-        for idx in list(itertools.product(*loopover)):
-            indices_position = [idx[j] for j in range(axis_n, axis_n+indices_len)]
+            loopover = [range(s) for s in out_shape]
+            for idx in list(itertools.product(*loopover)):
+                indices_position = [idx[j] for j in range(axis_n, axis_n+indices_len)]
 
-            real_indices = [idx[j] for j in range(axis_n)]
-            real_indices.append(indices_val[tuple(indices_position)])
-            real_indices.extend([idx[j] for j in range(axis_n + indices_len, len(idx))])
-            for r, d in zip(real_indices, data_shape):
-                if r >= d:
-                    raise ValueError("TFLite out of bound indices are not supported.")
+                real_indices = [idx[j] for j in range(axis_n)]
+                real_indices.append(indices_val[tuple(indices_position)])
+                real_indices.extend([idx[j] for j in range(axis_n + indices_len, len(idx))])
+                for r, d in zip(real_indices, data_shape):
+                    if r >= d:
+                        raise ValueError("TFLite out of bound indices are not supported.")
 
         # Use mode 'fast' since indices are already checked within bounds.
         out = _op.take(data, indices, axis=axis, mode="fast")
@@ -2039,7 +2035,7 @@ class OperatorConverter(object):
         split_options.Init(op_options.Bytes, op_options.Pos)
         num_splits = split_options.NumSplits()
 
-        in_expr = self.get_expr(input_tensor_idx)
+        in_expr = self.get_tensor_expr(input_tensor)
         out = _op.split(in_expr, num_splits, axis=int(split_axis))
         # Relay does not like a TupleWrapper of 1 element, further this
         # only shows up with tf1.13 if we use a split with num_splits==1.
